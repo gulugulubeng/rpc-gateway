@@ -5,8 +5,10 @@ import (
 	"io/ioutil"
 	"net/http"
 	"rpc-gateway/rpc"
+	"time"
 )
 
+// Handler 实现http.Handler接口 响应HTTP请求
 type Handler struct{}
 
 /**
@@ -40,6 +42,7 @@ func (gw Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		rw.Write([]byte(fmt.Sprintf("读取Body错误: %+v", err)))
 		return
 	}
+	// 初始化RPC请求参数
 	args := &Args{
 		Method:           req.Method,
 		URL:              req.URL,
@@ -58,16 +61,29 @@ func (gw Handler) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		TLS:              req.TLS,
 		Response:         req.Response,
 	}
+	// 声明RPC响应结果
 	var reply Reply
-	err = rpc.ClientMap[clu].Call(req.Header.Get("rpcMethod"), args, &reply)
-	if err != nil {
-		rw.WriteHeader(http.StatusInternalServerError)
-		rw.Write([]byte(fmt.Sprintf("调用RPC错误: %+v", err)))
-		return
+	// 异步发起RPC请求
+	call := rpc.ClientMap[clu].Go(req.Header.Get("rpcMethod"), args, &reply, nil)
+	// 阻塞等待RPC响应
+	select {
+	// 阻塞等待RPC请求完成
+	case <-call.Done:
+		// RPC返回异常
+		if call.Error != nil {
+			rw.WriteHeader(http.StatusInternalServerError)
+			rw.Write([]byte(fmt.Sprintf("调用RPC错误: %+v", err)))
+			return
+		}
+		// RPC返回正常
+		rw.WriteHeader(reply.HttpStatusCode)      // 初始化响应状态码
+		for k, v := range reply.HeaderKeyValues { // 设置HTTP响应头
+			rw.Header().Set(k, v)
+		}
+		rw.Write(reply.Body) // 获取响应体
+		// 阻塞等待超时
+	case <-time.After(time.Minute): // 默认超时时间为1min
+		rw.WriteHeader(http.StatusGatewayTimeout)
+		rw.Write([]byte("RPC请求超时"))
 	}
-	rw.WriteHeader(reply.HttpStatusCode)
-	for k, v := range reply.HeaderKeyValues {
-		rw.Header().Set(k, v)
-	}
-	rw.Write(reply.Body)
 }
